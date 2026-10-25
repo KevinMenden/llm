@@ -1,0 +1,30 @@
+[project]
+name = "llm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+# Current ROCm torch wheels are only published for cp313/cp314.
+requires-python = ">=3.13"
+dependencies = [
+    "torch",
+    "torchvision",
+    # torch pulls this in; it must resolve from the ROCm index, not PyPI.
+    "rocm[device-all]==7.14.*",
+    "tokenizers>=0.23.3",
+    "datasets>=5.1.0",
+]
+
+[tool.uv]
+# torch's rocm-sdk-* deps live only on the PyTorch index.
+index-strategy = "unsafe-best-match"
+# ROCm wheels exist for Linux x86_64 only; skip universal resolution.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-rocm" }
+torchvision = { index = "pytorch-rocm" }
+rocm = { index = "pytorch-rocm" }
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.14"
