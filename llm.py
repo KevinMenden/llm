@@ -1,19 +1,10 @@
-#%%
+# %%
 import math
 
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset
 from tokenizers import Tokenizer
-from torch import nn
-
-
-# Config
-vocab_size = 2000
-n_dim = 128
-n_heads = 4
-n_layers = 4
-context_size = 1024
+from torch import Tensor, nn
 
 
 class CausalSelfAttention(nn.Module):
@@ -31,7 +22,11 @@ class CausalSelfAttention(nn.Module):
 
         # lower triangular mask so we can't look at future tokens
         causal_mask = torch.tril(torch.ones(context_size, context_size))
-        self.register_buffer("causal_mask", causal_mask.view(1, 1, context_size, context_size))
+        self.register_buffer(
+            "causal_mask",
+            causal_mask.view(1, 1, context_size, context_size),
+            persistent=False,
+        )
 
     def forward(self, x):
         B, T, C = x.shape
@@ -41,29 +36,40 @@ class CausalSelfAttention(nn.Module):
         values = self.v(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
         # B, 4, T, T
-        scores = queries @ keys.transpose(-2, -1) / math.sqrt(self.d_head) # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
+        scores = (
+            queries @ keys.transpose(-2, -1) / math.sqrt(self.d_head)
+        )  # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
         # set everything in the lower triangular mask that is zero to minus infinity before softmax
         scores = scores.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
 
         # softmax on last dim, to get probability for each key
         attention_weights = torch.softmax(scores, dim=-1)
-        attention_result = attention_weights @ values # (B, n_head, T, d_head)
+        attention_result = attention_weights @ values  # (B, n_head, T, d_head)
         out = attention_result.transpose(1, 2).contiguous().view(B, T, C)
         return self.proj(out)
+
 
 class Block(nn.Module):
     """One block of the model"""
 
-    def __init__(self, n_dim: int = 128, context_size: int = 1024, n_heads: int = 4, expansion_factor: int = 4) -> None:
+    def __init__(
+        self,
+        n_dim: int = 128,
+        context_size: int = 1024,
+        n_heads: int = 4,
+        expansion_factor: int = 4,
+    ) -> None:
         super().__init__()
         self.n_dim = n_dim
         self.ln1 = nn.LayerNorm(n_dim)
         self.ln2 = nn.LayerNorm(n_dim)
-        self.attn = CausalSelfAttention(n_dim = n_dim, context_size = context_size, n_heads = n_heads)
+        self.attn = CausalSelfAttention(
+            n_dim=n_dim, context_size=context_size, n_heads=n_heads
+        )
         self.feed_forward = nn.Sequential(
             nn.Linear(n_dim, expansion_factor * n_dim),
             nn.GELU(),
-            nn.Linear(expansion_factor * n_dim, n_dim)
+            nn.Linear(expansion_factor * n_dim, n_dim),
         )
 
     def forward(self, x):
@@ -73,36 +79,68 @@ class Block(nn.Module):
         x = x + self.feed_forward(self.ln2(x))
         return x
 
+
 class LLM(nn.Module):
     """LLM module"""
 
-    def __init__(self, n_dim: int = 128, context_size: int = 1024, n_heads: int = 4, n_layers: int = 4) -> None:
+    def __init__(
+        self,
+        n_dim: int = 128,
+        context_size: int = 1024,
+        n_heads: int = 4,
+        n_layers: int = 4,
+        vocab_size: int = 2000,
+    ) -> None:
         super().__init__()
         self.tok_emb = nn.Embedding(vocab_size, n_dim)
         self.pos_emb = nn.Embedding(context_size, n_dim)
-        self.layers = nn.ModuleList([
-            Block(n_dim=n_dim, context_size=context_size, n_heads=n_heads) for _ in range(n_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                Block(n_dim=n_dim, context_size=context_size, n_heads=n_heads)
+                for _ in range(n_layers)
+            ]
+        )
         self.ln_final = nn.LayerNorm(n_dim)
         self.linear_out = nn.Linear(n_dim, vocab_size, bias=False)
 
-
-    def forward(self, ids: list[int]):
-        x = self.tok_emb(ids)
-        # todo: add position embedding here
+    def forward(
+        self, ids: Tensor, targets: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        pos = torch.arange(ids.shape[1], device=ids.device)
+        x = self.tok_emb(ids) + self.pos_emb(pos)
 
         for layer in self.layers:
             x = layer(x)
 
         logits = self.linear_out(self.ln_final(x))
 
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
-# Run some tests
-model = LLM()
-tok = Tokenizer.from_file("tokenizer.json")
-text = "this is a test"
-tokens = tok.encode(text)
-ids = torch.tensor(tokens.ids, dtype=torch.long).unsqueeze(0)
+        return logits, loss
 
-res = model(ids)
+
+if __name__ == "__main__":
+
+    # Config
+    vocab_size = 2000
+    n_dim = 128
+    n_heads = 4
+    n_layers = 4
+    context_size = 1024
+
+    # Run some tests
+    model = LLM()
+    tok = Tokenizer.from_file("tokenizer.json")
+    text = "this is a test"
+    tokens = tok.encode(text)
+
+    ids = torch.tensor(tokens.ids[:-1], dtype=torch.long).unsqueeze(0)
+    targets = torch.tensor(tokens.ids[1:], dtype=torch.long).unsqueeze(0)
+    print(ids.shape)
+    print(targets.shape)
+
+    res, loss = model(ids, targets)
+    print(res)
+    print(loss)
