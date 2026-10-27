@@ -12,6 +12,7 @@ dependencies = [
     "rocm[device-all]==7.14.*",
     "tokenizers>=0.23.3",
     "datasets>=5.1.0",
+    "tensorboard>=2.21.0",
 ]
 
 [tool.uv]

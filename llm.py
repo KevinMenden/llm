@@ -36,15 +36,19 @@ class CausalSelfAttention(nn.Module):
         values = self.v(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
         # B, 4, T, T
-        scores = (
-            queries @ keys.transpose(-2, -1) / math.sqrt(self.d_head)
-        )  # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
-        # set everything in the lower triangular mask that is zero to minus infinity before softmax
-        scores = scores.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
+        # scores = (
+        #     queries @ keys.transpose(-2, -1) / math.sqrt(self.d_head)
+        # )  # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
+        # # set everything in the lower triangular mask that is zero to minus infinity before softmax
+        # scores = scores.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
 
-        # softmax on last dim, to get probability for each key
-        attention_weights = torch.softmax(scores, dim=-1)
-        attention_result = attention_weights @ values  # (B, n_head, T, d_head)
+        # # softmax on last dim, to get probability for each key
+        # attention_weights = torch.softmax(scores, dim=-1)
+        # attention_result = attention_weights @ values  # (B, n_head, T, d_head)
+
+        # use pytorch scaled_dot_product_attention instead, it's twice as fast ...
+        attention_result = F.scaled_dot_product_attention(queries, keys, values, is_causal=True)
+
         out = attention_result.transpose(1, 2).contiguous().view(B, T, C)
         return self.proj(out)
 
@@ -102,6 +106,7 @@ class LLM(nn.Module):
         )
         self.ln_final = nn.LayerNorm(n_dim)
         self.linear_out = nn.Linear(n_dim, vocab_size, bias=False)
+        self.context_size = context_size
 
     def forward(
         self, ids: Tensor, targets: Tensor | None = None
@@ -119,6 +124,23 @@ class LLM(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
         return logits, loss
+
+    @torch.no_grad()
+    def generate(self, ids: Tensor, n_tokens: int = 1, temperature: float = 1.0) -> Tensor:
+        """Generate new tokens"""
+        ids_context = ids[:, -self.context_size:]
+        logits, _ = self(ids_context)
+        current_pos = logits[:, -1, :]
+        probs = F.softmax(current_pos / temperature, dim=-1)
+
+        sample_token = torch.multinomial(probs, num_samples=1)
+
+        new_ids = torch.cat([ids, sample_token], dim=1)
+
+        return new_ids
+
+
+
 
 
 if __name__ == "__main__":
@@ -142,5 +164,6 @@ if __name__ == "__main__":
     print(targets.shape)
 
     res, loss = model(ids, targets)
-    print(res)
-    print(loss)
+    print(res.shape)
+
+    print(model.generate(ids))
