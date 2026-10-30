@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from tokenizers import Tokenizer
+from torch.utils.tensorboard import SummaryWriter
 
 from llm import LLM
 
@@ -23,6 +24,11 @@ class Config:
     steps: int = 2000
     block_size: int = 256
     lr: float = 0.001
+    min_lr: float = 0.0001
+    warmup_steps: int = 0
+
+    # logging
+    run_name: str = "test_init"
 
 
 DEVICE = "cuda"
@@ -39,22 +45,6 @@ def get_batch(data, batch_size: int, block_size: int):
     return batch_x.to(DEVICE), batch_y.to(DEVICE)
 
 
-tok = Tokenizer.from_file("tokenizer.json")
-model = LLM(
-    vocab_size=tok.get_vocab_size(),
-    n_dim=Config.n_dim,
-    n_heads=Config.n_heads,
-    n_layers=Config.n_layers,
-).to(DEVICE)
-model.train()
-n_params = sum(p.numel() for p in model.parameters())
-print(f"{n_params:,} parameters")
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=Config.lr)
-
-train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
-val_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
-
 @torch.no_grad()
 def estimate_loss(data, n_batches: int = 20) -> float:
     """Mean loss over a few random batches, with the model in eval mode"""
@@ -66,6 +56,35 @@ def estimate_loss(data, n_batches: int = 20) -> float:
         losses.append(loss.item())
     model.train()
     return sum(losses) / len(losses)
+
+# Setup tensorboard logging
+writer = SummaryWriter(f"logs/{Config.run_name}")
+
+tok = Tokenizer.from_file("tokenizer.json")
+model = LLM(
+    vocab_size=tok.get_vocab_size(),
+    n_dim=Config.n_dim,
+    n_heads=Config.n_heads,
+    n_layers=Config.n_layers,
+).to(DEVICE)
+model.train()
+n_params = sum(p.numel() for p in model.parameters())
+print(f"{n_params:,} parameters")
+
+
+# Optimization and learning rate
+optimizer = torch.optim.AdamW(model.parameters(), lr=Config.lr)
+
+warmup = torch.optim.lr_scheduler.LinearLR(
+    optimizer, start_factor=0.01, end_factor=1.0, total_iters=Config.warmup_steps
+)
+cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, eta_min=Config.min_lr, T_max=Config.steps)
+scheduler = torch.optim.lr_scheduler.SequentialLR(
+    optimizer, schedulers=[warmup, cosine], milestones=[Config.warmup_steps]
+)
+
+train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
+val_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
 
 
 for step in range(Config.steps):
@@ -80,9 +99,14 @@ for step in range(Config.steps):
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
+    scheduler.step()
 
     torch.cuda.synchronize()
     step_time = time.perf_counter() - t0
+
+    # logging
+    writer.add_scalar("loss", loss.item(), step)
+    writer.add_scalar("lr", scheduler.get_last_lr()[0], step)
 
     if step % 100 == 0:
         val_loss = estimate_loss(val_data)

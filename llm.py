@@ -108,6 +108,23 @@ class LLM(nn.Module):
         self.linear_out = nn.Linear(n_dim, vocab_size, bias=False)
         self.context_size = context_size
 
+        self.apply(self._init_weights)
+        # scale down the layers that write into the residual stream (2 per block),
+        # so its variance doesn't grow with depth
+        for name, p in self.named_parameters():
+            if name.endswith("attn.proj.weight") or name.endswith("feed_forward.2.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layers))
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        """GPT-2 style init: N(0, 0.02) for linear/embedding weights, zero biases"""
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(
         self, ids: Tensor, targets: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
