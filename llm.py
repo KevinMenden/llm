@@ -6,6 +6,20 @@ import torch.nn.functional as F
 from tokenizers import Tokenizer
 from torch import Tensor, nn
 
+def precompute_rope_tables(context_size: int, d_head: int, base: float= 10_000.0):
+    """Precompute cos/sin tables of shape (context_size, d_head // 2)"""
+    inv_freq = 1.0 / (base ** (torch.arange(0, d_head, 2).float() / d_head))
+    positions = torch.arange(context_size).float()
+    angles = torch.outer(positions, inv_freq)
+    return angles.cos(), angles.sin()
+
+def rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    x_f32 = x.float() # rotate in fp32
+    x1, x2 = x_f32.chunk(2, dim=-1)
+    out = torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+    return out.type_as(x)
+
+
 
 class CausalSelfAttention(nn.Module):
     """Causal self attention module"""
@@ -20,31 +34,16 @@ class CausalSelfAttention(nn.Module):
         self.d_head = n_dim // n_heads
         self.n_heads = n_heads
 
-        # lower triangular mask so we can't look at future tokens
-        causal_mask = torch.tril(torch.ones(context_size, context_size))
-        self.register_buffer(
-            "causal_mask",
-            causal_mask.view(1, 1, context_size, context_size),
-            persistent=False,
-        )
-
-    def forward(self, x):
+    def forward(self, x, cos, sin):
         B, T, C = x.shape
         # Q, K, V with dimensions B, n_head, T, d_head
         queries = self.q(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         keys = self.k(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         values = self.v(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
-        # B, 4, T, T
-        # scores = (
-        #     queries @ keys.transpose(-2, -1) / math.sqrt(self.d_head)
-        # )  # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
-        # # set everything in the lower triangular mask that is zero to minus infinity before softmax
-        # scores = scores.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
-
-        # # softmax on last dim, to get probability for each key
-        # attention_weights = torch.softmax(scores, dim=-1)
-        # attention_result = attention_weights @ values  # (B, n_head, T, d_head)
+        # apply RoPE
+        queries = rope(queries, cos, sin)
+        keys = rope(keys, cos, sin)
 
         # use pytorch scaled_dot_product_attention instead, it's twice as fast ...
         attention_result = F.scaled_dot_product_attention(queries, keys, values, is_causal=True)
@@ -76,9 +75,9 @@ class Block(nn.Module):
             nn.Linear(expansion_factor * n_dim, n_dim),
         )
 
-    def forward(self, x):
+    def forward(self, x, cos, sin):
         # layer norm, attention and residual connection
-        x = x + self.attn(self.ln1(x))
+        x = x + self.attn(self.ln1(x), cos, sin)
         # then layer norm and feed forward layers
         x = x + self.feed_forward(self.ln2(x))
         return x
@@ -97,7 +96,6 @@ class LLM(nn.Module):
     ) -> None:
         super().__init__()
         self.tok_emb = nn.Embedding(vocab_size, n_dim)
-        self.pos_emb = nn.Embedding(context_size, n_dim)
         self.layers = nn.ModuleList(
             [
                 Block(n_dim=n_dim, context_size=context_size, n_heads=n_heads)
@@ -107,6 +105,10 @@ class LLM(nn.Module):
         self.ln_final = nn.LayerNorm(n_dim)
         self.linear_out = nn.Linear(n_dim, vocab_size, bias=False)
         self.context_size = context_size
+
+        cos, sin = precompute_rope_tables(context_size=self.context_size, d_head = n_dim // n_heads)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
 
         self.apply(self._init_weights)
         # scale down the layers that write into the residual stream (2 per block),
@@ -128,11 +130,12 @@ class LLM(nn.Module):
     def forward(
         self, ids: Tensor, targets: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
-        pos = torch.arange(ids.shape[1], device=ids.device)
-        x = self.tok_emb(ids) + self.pos_emb(pos)
+        T = ids.shape[1]
+        cos, sin = self.rope_cos[:T], self.rope_sin[:T]
+        x = self.tok_emb(ids)
 
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, cos, sin)
 
         logits = self.linear_out(self.ln_final(x))
 

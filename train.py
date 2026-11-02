@@ -15,23 +15,23 @@ class Config:
     vocab_size: int = 2000
 
     # model
-    n_dim: int = 512
+    n_dim: int = 1024
     n_heads: int = 8
     n_layers: int = 8
     context_size: int = 1024
 
     # training
-    batch_size: int = 256
+    batch_size: int = 128
     steps: int = 2000
     block_size: int = 256
     lr: float = 0.001
     min_lr: float = 0.0001
-    warmup_steps: int = 0
+    warmup_steps: int = 100
     val_steps: int = 100
     checkpoint_steps: int = 500
 
     # logging
-    run_name: str = "test_init"
+    run_name: str = "model_large_100m_rope"
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -121,13 +121,15 @@ for step in range(Config.steps):
             f"step time: {step_time * 1000:.1f} ms"
         )
 
-    if step % Config.checkpoint_steps:
+    if step % Config.checkpoint_steps == 0:
         checkpoint = {
             "config": Config,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "val_loss": val_loss,
         }
+        checkpoint_name = f"logs/checkpoints/{Config.run_name}_{step}.ckpt"
+        torch.save(checkpoint, checkpoint_name)
 
 
 # Generate a few tokens
