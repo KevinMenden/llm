@@ -9,6 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from llm import LLM
 
+
 @dataclass
 class Config:
     vocab_size: int = 2000
@@ -26,12 +27,14 @@ class Config:
     lr: float = 0.001
     min_lr: float = 0.0001
     warmup_steps: int = 0
+    val_steps: int = 100
+    checkpoint_steps: int = 500
 
     # logging
     run_name: str = "test_init"
 
 
-DEVICE = "cuda"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def get_batch(data, batch_size: int, block_size: int):
@@ -57,6 +60,7 @@ def estimate_loss(data, n_batches: int = 20) -> float:
     model.train()
     return sum(losses) / len(losses)
 
+
 # Setup tensorboard logging
 writer = SummaryWriter(f"logs/{Config.run_name}")
 
@@ -78,7 +82,9 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=Config.lr)
 warmup = torch.optim.lr_scheduler.LinearLR(
     optimizer, start_factor=0.01, end_factor=1.0, total_iters=Config.warmup_steps
 )
-cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, eta_min=Config.min_lr, T_max=Config.steps)
+cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, eta_min=Config.min_lr, T_max=Config.steps
+)
 scheduler = torch.optim.lr_scheduler.SequentialLR(
     optimizer, schedulers=[warmup, cosine], milestones=[Config.warmup_steps]
 )
@@ -86,7 +92,7 @@ scheduler = torch.optim.lr_scheduler.SequentialLR(
 train_data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
 val_data = np.memmap("data/val.bin", dtype=np.uint16, mode="r")
 
-
+val_loss = None
 for step in range(Config.steps):
     # CUDA is asynchronous, so synchronize before reading the clock
     torch.cuda.synchronize()
@@ -108,12 +114,20 @@ for step in range(Config.steps):
     writer.add_scalar("loss", loss.item(), step)
     writer.add_scalar("lr", scheduler.get_last_lr()[0], step)
 
-    if step % 100 == 0:
+    if step % Config.val_steps == 0:
         val_loss = estimate_loss(val_data)
         print(
             f"Step: {step}, loss: {loss.item()}, val loss: {val_loss}, "
             f"step time: {step_time * 1000:.1f} ms"
         )
+
+    if step % Config.checkpoint_steps:
+        checkpoint = {
+            "config": Config,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "val_loss": val_loss,
+        }
 
 
 # Generate a few tokens

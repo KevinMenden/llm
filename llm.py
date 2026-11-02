@@ -157,9 +157,6 @@ class LLM(nn.Module):
         return new_ids
 
 
-
-
-
 if __name__ == "__main__":
 
     # Config
