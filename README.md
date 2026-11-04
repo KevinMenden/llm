@@ -19,8 +19,6 @@ Training pipeline:
 
 - bf16 autocast in `estimate_loss`, val loss currently runs in fp32
 - resumable checkpoints: save scheduler state and step, restore the optimizer on load
-- save the config as a dict (`asdict`), the pickled `Config` class only loads from a script that defines it
-- cosine `T_max` should be `steps - warmup_steps`
 - log `tokens_seen` and bits per character
 - `torch.compile` for training (keep the uncompiled model for `generate` and checkpoints)
 - gradient checkpointing, if 100M params don't fit at the wanted batch size
@@ -28,8 +26,7 @@ Training pipeline:
 Architecture (nice to have):
 
 - KV cache, worth it once RLHF needs many rollouts
-- SwiGLU and RMSNorm, no biases in linear layers
-- remove the unused `context_size` argument from `CausalSelfAttention` and `Block`
+
 
 Probably skip for now:
 

@@ -1,6 +1,6 @@
 # %%
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import numpy as np
 import torch
@@ -101,7 +101,7 @@ warmup = torch.optim.lr_scheduler.LinearLR(
     optimizer, start_factor=0.01, end_factor=1.0, total_iters=Config.warmup_steps
 )
 cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, eta_min=Config.min_lr, T_max=Config.steps
+    optimizer, eta_min=Config.min_lr, T_max=Config.steps - Config.warmup_steps
 )
 scheduler = torch.optim.lr_scheduler.SequentialLR(
     optimizer, schedulers=[warmup, cosine], milestones=[Config.warmup_steps]
@@ -143,9 +143,11 @@ for step in range(Config.steps):
 
     if step % Config.checkpoint_steps == 0:
         checkpoint = {
-            "config": Config,
+            "config": asdict(Config()),
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "step": step,
             "val_loss": val_loss,
         }
         checkpoint_name = f"logs/checkpoints/{Config.run_name}_{step}.ckpt"
