@@ -12,26 +12,29 @@ from llm import LLM
 
 @dataclass
 class Config:
-    vocab_size: int = 2000
+    vocab_size: int = 16384
 
     # model
-    n_dim: int = 1024
+    n_dim: int = 768
     n_heads: int = 8
-    n_layers: int = 8
+    n_layers: int = 12
     context_size: int = 1024
 
     # training
-    batch_size: int = 128
-    steps: int = 2000
+    batch_size: int = 64
+    steps: int = 30000
     block_size: int = 256
-    lr: float = 0.001
-    min_lr: float = 0.0001
+    lr: float = 0.0001
+    min_lr: float = 0.00001
+    grad_clip = 1.0
+    weight_decay = 0.1
+
     warmup_steps: int = 100
     val_steps: int = 100
-    checkpoint_steps: int = 500
+    checkpoint_steps: int = 1000
 
     # logging
-    run_name: str = "model_large_100m_rope"
+    run_name: str = "test_run"
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -70,14 +73,29 @@ model = LLM(
     n_dim=Config.n_dim,
     n_heads=Config.n_heads,
     n_layers=Config.n_layers,
+    context_size=Config.context_size,
 ).to(DEVICE)
+
+weights_path = "/home/kevin/repos/llm/logs/checkpoints/model_v2_v16k_rope_29000.ckpt"
+if weights_path:
+    weights = torch.load(weights_path, weights_only=False)
+    model.load_state_dict(weights["model_state_dict"])
+
+
 model.train()
 n_params = sum(p.numel() for p in model.parameters())
 print(f"{n_params:,} parameters")
 
 
 # Optimization and learning rate
-optimizer = torch.optim.AdamW(model.parameters(), lr=Config.lr)
+# Only decay params with more than 1 dimension
+decay_params = [p for p in model.parameters() if p.dim() >= 2]
+no_decay_params = [p for p in model.parameters() if p.dim() < 2]
+
+optimizer = torch.optim.AdamW([
+    {"params": decay_params, "weight_decay": Config.weight_decay},
+    {"params": no_decay_params, "weight_decay": 0.0}
+], lr=Config.lr)
 
 warmup = torch.optim.lr_scheduler.LinearLR(
     optimizer, start_factor=0.01, end_factor=1.0, total_iters=Config.warmup_steps
@@ -104,6 +122,7 @@ for step in range(Config.steps):
         logits, loss = model(x, y)
     optimizer.zero_grad()
     loss.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), Config.grad_clip)
     optimizer.step()
     scheduler.step()
 
@@ -113,6 +132,7 @@ for step in range(Config.steps):
     # logging
     writer.add_scalar("loss", loss.item(), step)
     writer.add_scalar("lr", scheduler.get_last_lr()[0], step)
+    writer.add_scalar("grad_norm", grad_norm.item(), step)
 
     if step % Config.val_steps == 0:
         val_loss = estimate_loss(val_data)

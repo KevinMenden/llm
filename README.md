@@ -6,6 +6,37 @@
 - grouped query attention
 - bigger vocabulary
 
+### Before the big training run
+
+Needed for chat, SFT and RLHF:
+
+- `generate`: stop on an end token, add top-k/top-p, remove the unused `n_tokens`
+- train with a longer `block_size` (512+), 256 tokens is short for a conversation
+- SFT batching: right-pad and set labels to -100 for padding and user turns (`cross_entropy` already ignores -100, and right padding needs no attention mask because of the causal mask)
+- `forward`: option to return hidden states, for a value or reward head (only needed for PPO, not for DPO)
+
+Training pipeline:
+
+- bf16 autocast in `estimate_loss`, val loss currently runs in fp32
+- resumable checkpoints: save scheduler state and step, restore the optimizer on load
+- save the config as a dict (`asdict`), the pickled `Config` class only loads from a script that defines it
+- cosine `T_max` should be `steps - warmup_steps`
+- log `tokens_seen` and bits per character
+- `torch.compile` for training (keep the uncompiled model for `generate` and checkpoints)
+- gradient checkpointing, if 100M params don't fit at the wanted batch size
+
+Architecture (nice to have):
+
+- KV cache, worth it once RLHF needs many rollouts
+- SwiGLU and RMSNorm, no biases in linear layers
+- remove the unused `context_size` argument from `CausalSelfAttention` and `Block`
+
+Probably skip for now:
+
+- dropout, 2B+ tokens on 100M params won't overfit (maybe useful for SFT)
+- grouped query attention, mostly useful together with a KV cache
+- MoE, too much complexity at this model size
+
 
 ### Notes
 
