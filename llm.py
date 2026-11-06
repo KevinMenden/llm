@@ -105,7 +105,7 @@ class LLM(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, n_dim)
         self.layers = nn.ModuleList(
             [
-                Block(n_dim=n_dim, context_size=context_size, n_heads=n_heads)
+                Block(n_dim=n_dim, n_heads=n_heads)
                 for _ in range(n_layers)
             ]
         )

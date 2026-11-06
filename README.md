@@ -17,9 +17,6 @@ Needed for chat, SFT and RLHF:
 
 Training pipeline:
 
-- bf16 autocast in `estimate_loss`, val loss currently runs in fp32
-- resumable checkpoints: save scheduler state and step, restore the optimizer on load
-- log `tokens_seen` and bits per character
 - `torch.compile` for training (keep the uncompiled model for `generate` and checkpoints)
 - gradient checkpointing, if 100M params don't fit at the wanted batch size
 
