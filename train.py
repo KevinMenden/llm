@@ -25,12 +25,12 @@ class Config:
     grad_accum_steps: int = 2
     steps: int = 60000
     block_size: int = 512
-    lr: float = 0.00015
-    min_lr: float = 0.00001
+    lr: float = 0.00001
+    min_lr: float = 0.000001
     grad_clip: float = 1.0
     weight_decay: float = 0.1
 
-    warmup_steps: int = 1000
+    warmup_steps: int = 500
     val_steps: int = 100
     checkpoint_steps: int = 10000
 
